@@ -85,11 +85,4 @@ jobs:
           title: "OCI VM Status: ${{ steps.create_vm.outcome }}"
           status: ${{ steps.create_vm.outcome }}
           color: ${{ steps.create_vm.outcome == 'success' && '0x28a745' || '0xdc3545' }}
-          description: |
-            Attempt to create A1.Flex VM.
-            **Status:** `${{ steps.create_vm.outcome }}`
-
-            **Log Output:**
-```json
-            ${{ steps.create_vm.outputs.log_data }}
-            ```
+          description: "Attempt to create A1.Flex VM. Status: ${{ steps.create_vm.outcome }}\n\nLog Output:\n${{ steps.create_vm.outputs.log_data }}"
