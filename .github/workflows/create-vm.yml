@@ -46,42 +46,51 @@ jobs:
           echo "${{ secrets.OCI_CLI_KEY_CONTENT }}" > /home/runner/oci_api_key.pem
           chmod 600 /home/runner/oci_api_key.pem
 
-          # 2. 告诉 OCI CLI 密钥路径
+          # 2. 导出环境变量
           export OCI_CLI_KEY_FILE="/home/runner/oci_api_key.pem"
           
-          # 准备 SSH 公钥
-          echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/my_ssh_key.pub
+          # 【自动清洗变量】：去除前后可能由于粘贴意外导致的空格或换行
+          CLEAN_COMPARTMENT=$(echo "$COMPARTMENT_ID" | xargs)
+          CLEAN_SUBNET=$(echo "$SUBNET_ID" | xargs)
 
-          # 【核心修复】：将 shape-config 写入独立的 JSON 文件，避免任何转义和引号被剥离的问题
+          # 准备环境文件
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/my_ssh_key.pub
           echo '{"ocpus": 1, "memoryInGBs": 6}' > /home/runner/shape_config.json
 
-          # 3. 运行创建命令（使用 file:// 引入 JSON 文件）
+          echo "====================【重要信息排查区】===================="
+          echo "正在实时获取您租户在凤凰城当前可用的确切可用区列表..."
+          # 查询正确的 AD 名称
+          AD_LIST=$(oci iam availability-domain list --compartment-id "$CLEAN_COMPARTMENT" 2>&1 || true)
+          echo "$AD_LIST"
+          echo "========================================================"
+
+          # 3. 运行创建命令
           OCI_OUTPUT=$(oci compute instance launch \
-            --compartment-id "$COMPARTMENT_ID" \
+            --compartment-id "$CLEAN_COMPARTMENT" \
             --availability-domain "$AD_NAME" \
             --shape "VM.Standard.A1.Flex" \
             --shape-config "file:///home/runner/shape_config.json" \
-            --subnet-id "$SUBNET_ID" \
+            --subnet-id "$CLEAN_SUBNET" \
             --image-id "$IMAGE_ID" \
             --ssh-authorized-keys-file "/home/runner/my_ssh_key.pub" \
             --assign-public-ip true \
             --display-name "coolify-vm" \
             --boot-volume-size-in-gbs 200 2>&1 || true)
 
+          # 把获取的 AD 列表追加到日志里方便 Discord 观察
+          TOTAL_LOG="【真实可用区列表】：\n$AD_LIST\n\n【创建返回结果】：\n$OCI_OUTPUT"
+
           # Store the log as a GitHub step output
           echo "log_data<<EOF" >> $GITHUB_OUTPUT
-          echo "$OCI_OUTPUT" >> $GITHUB_OUTPUT
+          echo "$TOTAL_LOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
           # Check the log content for an error string.
           if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
             echo "Success! 'PROVISIONING' state found in output."
             exit 0
-          elif echo "$OCI_OUTPUT" | grep -q 'Out of host capacity'; then
-            echo "Failed: Out of host capacity (甲骨文经典缺货，属于正常现象，正在等待下一次定时任务)"
-            exit 1
           else
-            echo "Error: Unexpected OCI output. Failing the step."
+            echo "Failed."
             exit 1
           fi
 
