@@ -30,8 +30,9 @@ jobs:
       - name: Add OCI CLI to path
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-- name: Setup OCI CLI and Try to Create VM
+      - name: Setup OCI CLI and Try to Create VM
         id: create_vm
+        # This forces the job to succeed so the cache will save.
         continue-on-error: true 
         run: |
           set -o pipefail
@@ -89,6 +90,6 @@ jobs:
             **Status:** `${{ steps.create_vm.outcome }}`
 
             **Log Output:**
-            ```json
+```json
             ${{ steps.create_vm.outputs.log_data }}
             ```
