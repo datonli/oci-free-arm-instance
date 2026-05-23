@@ -7,7 +7,6 @@ on:
   workflow_dispatch:
 env:
   COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
-  IMAGE_ID: "ocid1.image.oc1.phx.aaaaaaaaoz6w5a2sklyrggym5epwdfjsh7itp3qgpxqntorjgrj5v25jfy6q"
   SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
   OCI_CLI_REGION: "us-phoenix-1"
   OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
@@ -55,11 +54,42 @@ jobs:
           echo "${{ secrets.SSH_PUBLIC_KEY }}" > /home/runner/my_ssh_key.pub
           echo '{"ocpus": 1, "memoryInGBs": 6}' > /home/runner/shape_config.json
 
-          # 3. 核心策略：自动轮询 3 个可用区进行抢机
+          echo "====================【动态镜像获取】===================="
+          # 实时查询凤凰城针对 ARM (aarch64) 架构最新的官方 Ubuntu 24.04 镜像 ID
+          # 这样能 100% 确保拿到的 ID 在该 Region 存在，且完美匹配 VM.Standard.A1.Flex Shape
+          DYNAMIC_IMAGE_ID=$(oci compute image list \
+            --compartment-id "$CLEAN_COMPARTMENT" \
+            --operating-system "Canonical Ubuntu" \
+            --operating-system-version "24.04" \
+            --shape "VM.Standard.A1.Flex" \
+            --query "data[0].id" \
+            --raw-output 2>&1 || true)
+          
+          # 如果 24.04 没搜到，保底搜一下 22.04
+          if [[ "$DYNAMIC_IMAGE_ID" != ocid1.image.* ]]; then
+            echo "未找到 24.04 ARM 镜像，正在尝试获取 22.04 ARM 镜像..."
+            DYNAMIC_IMAGE_ID=$(oci compute image list \
+              --compartment-id "$CLEAN_COMPARTMENT" \
+              --operating-system "Canonical Ubuntu" \
+              --operating-system-version "22.04" \
+              --shape "VM.Standard.A1.Flex" \
+              --query "data[0].id" \
+              --raw-output 2>&1 || true)
+          fi
+
+          echo "最终获取到的真实 ARM 镜像 ID: $DYNAMIC_IMAGE_ID"
+          echo "========================================================"
+
+          # 如果连动态获取都失败了，说明接口出了别的岔子，提前终止
+          if [[ "$DYNAMIC_IMAGE_ID" != ocid1.image.* ]]; then
+            echo "错误: 无法获取有效的官方 Ubuntu ARM 镜像 ID。错误信息: $DYNAMIC_IMAGE_ID"
+            exit 1
+          fi
+
+          # 3. 运行三路可用区轮询创建命令
           ALL_OUTPUTS=""
           SUCCESS_FLAG=0
 
-          # 从之前查询成功的列表中提取 3 个 AD 名称进行循环
           for AD in "TbLZ:PHX-AD-1" "TbLZ:PHX-AD-2" "TbLZ:PHX-AD-3"
           do
             echo "正在尝试在可用区 [ $AD ] 创建实例..."
@@ -70,7 +100,7 @@ jobs:
               --shape "VM.Standard.A1.Flex" \
               --shape-config "file:///home/runner/shape_config.json" \
               --subnet-id "$CLEAN_SUBNET" \
-              --image-id "$IMAGE_ID" \
+              --image-id "$DYNAMIC_IMAGE_ID" \
               --ssh-authorized-keys-file "/home/runner/my_ssh_key.pub" \
               --assign-public-ip true \
               --display-name "coolify-vm" \
@@ -78,7 +108,6 @@ jobs:
             
             ALL_OUTPUTS="$ALL_OUTPUTS\n\n【可用区 $AD 尝试结果】:\n$OCI_OUTPUT"
 
-            # 只要有一个可用区开始 Provisioning（创建中）或者报容量不足（说明路走通了，只是缺货），就视为逻辑正确
             if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
               echo "恭喜！在 $AD 成功创建实例！"
               SUCCESS_FLAG=1
@@ -94,14 +123,13 @@ jobs:
           echo -e "$ALL_OUTPUTS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-          # 根据最终的状态决定 Actions 步骤的成败
           if [ $SUCCESS_FLAG -eq 1 ]; then
             exit 0
           elif [ $SUCCESS_FLAG -eq 2 ]; then
-            echo "所有可用区认证通过，但当前甲骨文机房全线缺货。等待下一次定时任务自动重试。"
+            echo "所有可用区认证与参数完全通过！但当前甲骨文机房全线缺货。正在等待定时任务自动重试。"
             exit 1
           else
-            echo "未能成功连接到任何可用区，请检查输出日志。"
+            echo "未能成功创建，请检查输出日志。"
             exit 1
           fi
 
